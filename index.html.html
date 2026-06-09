@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRICK BREAKER</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Courier New', Courier, monospace;
+    overflow: hidden;
+    image-rendering: pixelated;
+  }
+
+  /* dirt/grass background texture via repeating pattern */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(0,0,0,0.08) 0px, transparent 2px, transparent 16px),
+      repeating-linear-gradient(90deg, rgba(0,0,0,0.08) 0px, transparent 2px, transparent 16px);
+    pointer-events: none;
+  }
+
+  #wrapper {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  canvas {
+    display: block;
+    border: 4px solid #5a3e1b;
+    outline: 4px solid #000;
+    box-shadow: 6px 6px 0px #000;
+    image-rendering: pixelated;
+  }
+
+  .screen {
+    position: absolute;
+    top: 0; left: 0;
+    width: 480px;
+    height: 540px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    background: rgba(0, 0, 0, 0.82);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .screen.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  .screen-title {
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: 900;
+    font-size: 38px;
+    color: #fff;
+    letter-spacing: 2px;
+    text-align: center;
+    line-height: 1.2;
+    text-shadow: 3px 3px 0px #000, -1px -1px 0px #000;
+  }
+
+  .screen-title .accent {
+    color: #5ddb3f;
+    display: block;
+    text-shadow: 3px 3px 0px #1a4a0e, -1px -1px 0px #000;
+  }
+
+  .screen-subtitle {
+    color: #aaa;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-align: center;
+    text-shadow: 1px 1px 0 #000;
+  }
+
+  .btn {
+    background: #5ddb3f;
+    border: none;
+    border-bottom: 4px solid #2a6e18;
+    border-right: 4px solid #2a6e18;
+    color: #fff;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 14px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    padding: 12px 36px;
+    cursor: pointer;
+    text-transform: uppercase;
+    text-shadow: 1px 1px 0 #000;
+    transition: all 0.05s;
+    box-shadow: -2px -2px 0 #88ff66 inset;
+    image-rendering: pixelated;
+  }
+
+  .btn:hover {
+    background: #6ef04e;
+    transform: translateY(-1px);
+  }
+
+  .btn:active {
+    border-bottom: 1px solid #2a6e18;
+    border-right: 1px solid #2a6e18;
+    transform: translateY(3px) translateX(3px);
+  }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <canvas id="canvas" width="480" height="540"></canvas>
+
+  <div class="screen visible" id="startScreen">
+    <div class="screen-title">BRICK<span class="accent">BREAKER</span></div>
+    <div class="screen-subtitle">Maus oder Pfeiltasten zum Steuern</div>
+    <button class="btn" id="startBtn">SPIEL STARTEN</button>
+  </div>
+
+  <div class="screen" id="gameoverScreen">
+    <div class="screen-title">GAME<span class="accent">OVER</span></div>
+    <button class="btn" id="restartBtn">NOCHMAL</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const W = canvas.width, H = canvas.height;
+
+let lives = 3, gameState = 'idle';
+
+const paddle = { w: 88, h: 12, x: W/2 - 44, y: H - 32, speed: 6 };
+
+let ball = {};
+const trail = [];
+const TRAIL_LEN = 14;
+
+function resetBall() {
+  ball = { x: W/2, y: H - 55, dx: 5, dy: -5, r: 7 };
+  trail.length = 0;
+}
+
+const COLS = 8, ROWS = 5;
+const BRICK_W = 50, BRICK_H = 18, BRICK_PAD = 6;
+const BRICK_OFF_X = (W - (COLS * (BRICK_W + BRICK_PAD) - BRICK_PAD)) / 2;
+const BRICK_OFF_Y = 48;
+
+// Minecraft block colors: grass, stone, wood, diamond, redstone
+const ROW_COLORS = [
+  { top: '#6ab04c', mid: '#5a9e3c', dark: '#3a6e1c', light: '#8fd468' },  // grass
+  { top: '#888888', mid: '#707070', dark: '#484848', light: '#aaaaaa' },  // stone
+  { top: '#a0622a', mid: '#8a4e1a', dark: '#5a2e0a', light: '#c07840' },  // wood
+  { top: '#4de0d0', mid: '#2abcac', dark: '#0a7a6e', light: '#80ffee' },  // diamond
+  { top: '#cc2222', mid: '#aa1111', dark: '#660000', light: '#ff5555' },  // redstone
+];
+
+let bricks = [];
+
+function buildBricks() {
+  bricks = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      bricks.push({
+        x: BRICK_OFF_X + c * (BRICK_W + BRICK_PAD),
+        y: BRICK_OFF_Y + r * (BRICK_H + BRICK_PAD),
+        w: BRICK_W, h: BRICK_H,
+        row: r, alive: true, flash: 0
+      });
+    }
+  }
+}
+
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ' && gameState === 'playing') { gameState = 'paused'; }
+  else if (e.key === ' ' && gameState === 'paused') { gameState = 'playing'; loop(); }
+});
+document.addEventListener('keyup', e => keys[e.key] = false);
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  paddle.x = Math.max(0, Math.min(W - paddle.w, e.clientX - rect.left - paddle.w / 2));
+});
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('visible'));
+  if (id) document.getElementById(id).classList.add('visible');
+}
+
+// ── DRAW HELPERS ──────────────────────────────────────────
+// Pixelated block drawing — no rounded corners, hard edges, highlight/shadow
+function drawBlock(x, y, w, h, col, flashing) {
+  if (flashing) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x, y, w, h);
+    return;
+  }
+  // main face
+  ctx.fillStyle = col.mid;
+  ctx.fillRect(x, y, w, h);
+  // top highlight
+  ctx.fillStyle = col.top;
+  ctx.fillRect(x, y, w, 4);
+  // left highlight
+  ctx.fillStyle = col.light;
+  ctx.fillRect(x, y, 3, h);
+  // bottom shadow
+  ctx.fillStyle = col.dark;
+  ctx.fillRect(x, y + h - 3, w, 3);
+  // right shadow
+  ctx.fillStyle = col.dark;
+  ctx.fillRect(x + w - 3, y, 3, h);
+  // pixel corner dots (Minecraft-style)
+  ctx.fillStyle = col.dark;
+  ctx.fillRect(x, y + h - 3, 3, 3);
+  ctx.fillRect(x + w - 3, y, 3, 3);
+  ctx.fillStyle = col.light;
+  ctx.fillRect(x, y, 3, 3);
+  // inner texture dots
+  ctx.fillStyle = col.dark;
+  ctx.globalAlpha = 0.2;
+  for (let tx = x + 8; tx < x + w - 4; tx += 10) {
+    for (let ty = y + 5; ty < y + h - 4; ty += 6) {
+      ctx.fillRect(tx, ty, 2, 2);
+    }
+  }
+  ctx.globalAlpha = 1;
+  // black border
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
+// ── DRAW ──────────────────────────────────────────────────
+function drawBackground() {
+  // sky
+  ctx.fillStyle = '#3a7abf';
+  ctx.fillRect(0, 0, W, H * 0.75);
+  // underground
+  ctx.fillStyle = '#5a3e1b';
+  ctx.fillRect(0, H * 0.75, W, H * 0.25);
+
+  // pixel grid overlay
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 16) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 16) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // small clouds (pixel style)
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  [[60,60],[200,40],[360,70],[430,30]].forEach(([cx,cy]) => {
+    ctx.fillRect(cx, cy, 32, 8);
+    ctx.fillRect(cx+8, cy-8, 16, 8);
+  });
+}
+
+function drawLives() {
+  // draw as pixelated hearts
+  for (let i = 0; i < 3; i++) {
+    const hx = W - 24 - i * 20;
+    const hy = 10;
+    ctx.fillStyle = i < lives ? '#cc2222' : '#444';
+    // simple pixel heart shape
+    ctx.fillRect(hx + 2, hy, 4, 2);
+    ctx.fillRect(hx + 8, hy, 4, 2);
+    ctx.fillRect(hx, hy + 2, 14, 4);
+    ctx.fillRect(hx + 2, hy + 6, 10, 2);
+    ctx.fillRect(hx + 4, hy + 8, 6, 2);
+    ctx.fillRect(hx + 6, hy + 10, 2, 2);
+    if (i < lives) {
+      ctx.fillStyle = '#ff5555';
+      ctx.fillRect(hx + 2, hy + 2, 4, 2);
+    }
+  }
+}
+
+function drawBricks() {
+  bricks.forEach(b => {
+    if (!b.alive) return;
+    const col = ROW_COLORS[b.row];
+    drawBlock(b.x, b.y, b.w, b.h, col, b.flash > 0);
+    if (b.flash > 0) b.flash--;
+  });
+}
+
+function drawTrail() {
+  trail.forEach((p, i) => {
+    const alpha = (i / trail.length) * 0.45;
+    const size = Math.max(2, Math.floor(ball.r * (i / trail.length) * 1.2));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#ffe066';
+    // pixelated square trail
+    ctx.fillRect(Math.floor(p.x - size/2), Math.floor(p.y - size/2), size, size);
+    ctx.restore();
+  });
+}
+
+function drawBall() {
+  const bx = Math.floor(ball.x - ball.r);
+  const by = Math.floor(ball.y - ball.r);
+  const bs = ball.r * 2;
+  // main ball (TNT style - white/red pixel circle)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bx + 2, by, bs - 4, bs);
+  ctx.fillRect(bx, by + 2, bs, bs - 4);
+  ctx.fillStyle = '#ffdd44';
+  ctx.fillRect(bx + 2, by + 2, bs - 4, bs - 4);
+  ctx.fillStyle = '#ffaa00';
+  ctx.fillRect(bx + bs - 4, by + bs - 4, 4, 4);
+  ctx.fillRect(bx, by + bs - 4, 4, 4);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(bx + 2, by + 2, 3, 3);
+  // outline
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, by + 0.5, bs - 1, bs - 1);
+}
+
+function drawPaddle() {
+  // wooden plank style
+  drawBlock(paddle.x, paddle.y, paddle.w, paddle.h,
+    { top: '#c8874a', mid: '#a0622a', dark: '#5a2e0a', light: '#e0a060' }, false);
+}
+
+function drawPauseOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffe066';
+  ctx.font = 'bold 32px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('PAUSE', W/2, H/2);
+  ctx.font = '13px "Courier New", monospace';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('SPACE zum Fortfahren', W/2, H/2 + 30);
+}
+
+// ── UPDATE ────────────────────────────────────────────────
+function update() {
+  if (keys['ArrowLeft'])  paddle.x = Math.max(0, paddle.x - paddle.speed);
+  if (keys['ArrowRight']) paddle.x = Math.min(W - paddle.w, paddle.x + paddle.speed);
+
+  trail.push({ x: ball.x, y: ball.y });
+  if (trail.length > TRAIL_LEN) trail.shift();
+
+  ball.x += ball.dx;
+  ball.y += ball.dy;
+
+  if (ball.x - ball.r < 0)  { ball.x = ball.r;     ball.dx *= -1; }
+  if (ball.x + ball.r > W)  { ball.x = W - ball.r; ball.dx *= -1; }
+  if (ball.y - ball.r < 0)  { ball.y = ball.r;      ball.dy *= -1; }
+
+  if (
+    ball.dy > 0 &&
+    ball.x > paddle.x && ball.x < paddle.x + paddle.w &&
+    ball.y + ball.r >= paddle.y && ball.y + ball.r <= paddle.y + paddle.h + 4
+  ) {
+    ball.dy = -Math.abs(ball.dy);
+    const hitPos = (ball.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2);
+    ball.dx = hitPos * 6;
+  }
+
+  if (ball.y - ball.r > H) {
+    lives--;
+    if (lives <= 0) { triggerGameOver(); return; }
+    resetBall();
+  }
+
+  bricks.forEach(b => {
+    if (!b.alive) return;
+    if (
+      ball.x + ball.r > b.x && ball.x - ball.r < b.x + b.w &&
+      ball.y + ball.r > b.y && ball.y - ball.r < b.y + b.h
+    ) {
+      b.alive = false;
+      b.flash = 4;
+      const overlapL = ball.x + ball.r - b.x;
+      const overlapR = b.x + b.w - (ball.x - ball.r);
+      const overlapT = ball.y + ball.r - b.y;
+      const overlapB = b.y + b.h - (ball.y - ball.r);
+      if (Math.min(overlapL, overlapR) < Math.min(overlapT, overlapB)) ball.dx *= -1;
+      else ball.dy *= -1;
+    }
+  });
+
+  if (bricks.every(b => !b.alive)) {
+    buildBricks();
+    resetBall();
+  }
+}
+
+// ── LOOP ──────────────────────────────────────────────────
+let rafId;
+function loop() {
+  if (gameState === 'playing') {
+    update();
+    drawBackground();
+    drawBricks();
+    drawTrail();
+    drawBall();
+    drawPaddle();
+    drawLives();
+    rafId = requestAnimationFrame(loop);
+  } else if (gameState === 'paused') {
+    drawBackground();
+    drawBricks();
+    drawTrail();
+    drawBall();
+    drawPaddle();
+    drawLives();
+    drawPauseOverlay();
+  }
+}
+
+function startGame() {
+  lives = 3;
+  buildBricks();
+  resetBall();
+  paddle.x = W/2 - paddle.w/2;
+  showScreen(null);
+  gameState = 'playing';
+  cancelAnimationFrame(rafId);
+  loop();
+}
+
+function triggerGameOver() {
+  gameState = 'over';
+  cancelAnimationFrame(rafId);
+  showScreen('gameoverScreen');
+}
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+
+drawBackground();
+</script>
+</body>
+</html>
